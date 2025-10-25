@@ -265,6 +265,59 @@ JS;
 add_shortcode( 'pw_user_geo_redirect', function(){ return pw_user_geo_redirect_html(); } );
 
 // 2) AJAX endpoint (guests + logged-in)
+if ( ! function_exists( 'pw_user_geo_normalize_uri' ) ) {
+        /**
+         * Ensure we only work with relative paths + optional query strings.
+         */
+        function pw_user_geo_normalize_uri( string $uri ): string {
+                $uri   = preg_replace( '/[\x00-\x1F\x7F]/', '', $uri );
+                $parts = wp_parse_url( $uri );
+
+                if ( ! is_array( $parts ) ) {
+                        return '/';
+                }
+
+                $path = $parts['path'] ?? '/';
+                $path = $path === '' ? '/' : $path;
+                if ( $path[0] !== '/' ) {
+                        $path = '/' . ltrim( $path, '/' );
+                }
+
+                $query = isset( $parts['query'] ) && $parts['query'] !== ''
+                        ? '?' . $parts['query']
+                        : '';
+
+                return $path . $query;
+        }
+}
+
+if ( ! function_exists( 'pw_user_geo_normalize_host' ) ) {
+        /**
+         * Normalize host (optionally with port) from client-side value.
+         */
+        function pw_user_geo_normalize_host( string $host ): string {
+                $host = preg_replace( '/[\x00-\x1F\x7F]/', '', $host );
+                if ( $host === '' ) {
+                        return '';
+                }
+
+                $parsed = wp_parse_url( '//' . ltrim( $host, '/' ) );
+                if ( ! is_array( $parsed ) || empty( $parsed['host'] ) ) {
+                        return '';
+                }
+
+                $clean = strtolower( preg_replace( '/[^a-z0-9\.-]/', '', $parsed['host'] ) );
+
+                if ( ! empty( $parsed['port'] ) ) {
+                        $port = (int) $parsed['port'];
+                        if ( $port > 0 ) {
+                                $clean .= ':' . $port;
+                        }
+                }
+
+                return $clean;
+        }
+}
 if ( ! function_exists( 'pw_user_geo_redirect_ajax' ) ) {
 	function pw_user_geo_redirect_ajax() {
 		// Ensure option keys and helpers exist
@@ -285,12 +338,28 @@ if ( ! function_exists( 'pw_user_geo_redirect_ajax' ) ) {
 		if ( ! empty($opt['skip_admins']) && current_user_can('manage_options') ) wp_send_json_success( ['redirect'=>false,'reason'=>'admin'] );
 		if ( ! empty($opt['respect_bypass']) && ! empty($_COOKIE['pw_geo_noredirect']) ) wp_send_json_success( ['redirect'=>false,'reason'=>'bypass_cookie'] );
 
-		// Input from client
-		$uri  = isset($_POST['uri'])  ? (string) wp_unslash($_POST['uri'])  : '/';
-		$host = isset($_POST['host']) ? (string) wp_unslash($_POST['host']) : '';
+		$uri  = isset( $_POST['uri'] )
+				? pw_user_geo_normalize_uri( (string) wp_unslash( $_POST['uri'] ) )
+				: '/';
+		$host = isset( $_POST['host'] )
+				? pw_user_geo_normalize_host( (string) wp_unslash( $_POST['host'] ) )
+				: '';
+
+		if ( $host === '' ) {
+				$server_host = isset( $_SERVER['HTTP_HOST'] )
+						? pw_user_geo_normalize_host( (string) wp_unslash( $_SERVER['HTTP_HOST'] ) )
+						: '';
+
+				$host = $server_host;
+		}
+
+		if ( $host === '' ) {
+				wp_send_json_success( [ 'redirect' => false, 'reason' => 'host_unknown' ] );
+		}
 
 		// Rules
 		$map = pw_user_geo_redirect_parse_mapping( $opt['mapping_raw'] ?? '' );
+
 		if ( empty( $map ) ) wp_send_json_success( ['redirect'=>false,'reason'=>'no_mapping'] );
 
 		// Country
