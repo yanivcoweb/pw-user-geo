@@ -297,6 +297,8 @@ if ( ! function_exists( 'pw_user_geo_normalize_host' ) ) {
          */
         function pw_user_geo_normalize_host( string $host ): string {
                 $host = preg_replace( '/[\x00-\x1F\x7F]/', '', $host );
+                $host = trim( $host );
+
                 if ( $host === '' ) {
                         return '';
                 }
@@ -306,7 +308,23 @@ if ( ! function_exists( 'pw_user_geo_normalize_host' ) ) {
                         return '';
                 }
 
-                $clean = strtolower( preg_replace( '/[^a-z0-9\.-]/', '', $parsed['host'] ) );
+                $raw_host = strtolower( trim( (string) $parsed['host'] ) );
+
+                if ( $raw_host === '' ) {
+                        return '';
+                }
+
+                if ( filter_var( $raw_host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 ) ) {
+                        $clean = '[' . trim( $raw_host, '[]' ) . ']';
+                } elseif ( filter_var( $raw_host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 ) ) {
+                        $clean = $raw_host;
+                } else {
+                        $clean = preg_replace( '/[^a-z0-9\.-]/', '', $raw_host );
+                }
+
+                if ( $clean === '' ) {
+                        return '';
+                }
 
                 if ( ! empty( $parsed['port'] ) ) {
                         $port = (int) $parsed['port'];
@@ -318,78 +336,207 @@ if ( ! function_exists( 'pw_user_geo_normalize_host' ) ) {
                 return $clean;
         }
 }
+
+if ( ! function_exists( 'pw_user_geo_normalize_host_from_url' ) ) {
+        /**
+         * Extract and normalize host (with optional port) from a URL value.
+         */
+        function pw_user_geo_normalize_host_from_url( string $url ): string {
+                $parts = wp_parse_url( $url );
+                if ( ! is_array( $parts ) || empty( $parts['host'] ) ) {
+                        return '';
+                }
+
+                $host = $parts['host'];
+                if ( ! empty( $parts['port'] ) ) {
+                        $host .= ':' . $parts['port'];
+                }
+
+                return pw_user_geo_normalize_host( $host );
+        }
+}
+
+if ( ! function_exists( 'pw_user_geo_resolve_request_host' ) ) {
+        /**
+         * Attempt to determine the current request host from multiple trusted sources.
+         */
+        function pw_user_geo_resolve_request_host( string $client_host ): string {
+                $sources = [];
+
+                if ( $client_host !== '' ) {
+                        $sources[] = $client_host;
+                }
+
+                $server_keys = [ 'HTTP_HOST', 'HTTP_X_FORWARDED_HOST', 'SERVER_NAME' ];
+                foreach ( $server_keys as $key ) {
+                        if ( empty( $_SERVER[ $key ] ) ) {
+                                continue;
+                        }
+
+                        $raw = (string) $_SERVER[ $key ];
+                        $candidates = $key === 'HTTP_X_FORWARDED_HOST'
+                                ? array_map( 'trim', explode( ',', $raw ) )
+                                : [ $raw ];
+
+                        foreach ( $candidates as $candidate ) {
+                                if ( $candidate === '' ) {
+                                        continue;
+                                }
+                                $sources[] = $candidate;
+                        }
+                }
+
+                $url_sources = [
+                        home_url(),
+                        site_url(),
+                ];
+
+                if ( function_exists( 'network_home_url' ) ) {
+                        $url_sources[] = network_home_url();
+                }
+
+                if ( function_exists( 'network_site_url' ) ) {
+                        $url_sources[] = network_site_url();
+                }
+
+                foreach ( $url_sources as $url_source ) {
+                        if ( is_string( $url_source ) && $url_source !== '' ) {
+                                $normalized = pw_user_geo_normalize_host_from_url( $url_source );
+                                if ( $normalized !== '' ) {
+                                        $sources[] = $normalized;
+                                }
+                        }
+                }
+
+                foreach ( $sources as $source ) {
+                        $normalized = pw_user_geo_normalize_host( (string) $source );
+                        if ( $normalized !== '' ) {
+                                return $normalized;
+                        }
+                }
+
+                return '';
+        }
+}
+
 if ( ! function_exists( 'pw_user_geo_redirect_ajax' ) ) {
-	function pw_user_geo_redirect_ajax() {
-		// Ensure option keys and helpers exist
-		if ( ! defined( 'PW_USER_GEO_REDIRECT_OPTION' ) ) define( 'PW_USER_GEO_REDIRECT_OPTION', 'pw_user_geo_redirects' );
-		if ( ! function_exists( 'pw_user_geo_redirect_default_options' ) || ! function_exists( 'pw_user_geo_redirect_parse_mapping' ) ) {
-			wp_send_json_success( [ 'redirect' => false, 'reason' => 'settings_missing' ] );
-		}
+    function pw_user_geo_redirect_ajax() {
+                // Ensure option keys and helpers exist
+                if ( ! defined( 'PW_USER_GEO_REDIRECT_OPTION' ) ) define( 'PW_USER_GEO_REDIRECT_OPTION', 'pw_user_geo_redirects' );
+                if ( ! function_exists( 'pw_user_geo_redirect_default_options' ) || ! function_exists( 'pw_user_geo_redirect_parse_mapping' ) ) {
+                        wp_send_json_success( [ 'redirect' => false, 'reason' => 'settings_missing', 'debug' => [ 'reason' => 'settings_missing' ] ] );
+                }
 
-		nocache_headers();
+                nocache_headers();
 
-		$opt = wp_parse_args( get_option( PW_USER_GEO_REDIRECT_OPTION ), pw_user_geo_redirect_default_options() );
+                $opt = wp_parse_args( get_option( PW_USER_GEO_REDIRECT_OPTION ), pw_user_geo_redirect_default_options() );
 
-		// Respect settings
-		if ( empty( $opt['enabled'] ) )                            wp_send_json_success( ['redirect'=>false,'reason'=>'disabled'] );
-		if ( defined('REST_REQUEST') && REST_REQUEST )              wp_send_json_success( ['redirect'=>false,'reason'=>'rest'] );
-		if ( wp_doing_cron() )                                     wp_send_json_success( ['redirect'=>false,'reason'=>'cron'] );
-		if ( ! empty($opt['skip_logged_in']) && is_user_logged_in() ) wp_send_json_success( ['redirect'=>false,'reason'=>'logged_in'] );
-		if ( ! empty($opt['skip_admins']) && current_user_can('manage_options') ) wp_send_json_success( ['redirect'=>false,'reason'=>'admin'] );
-		if ( ! empty($opt['respect_bypass']) && ! empty($_COOKIE['pw_geo_noredirect']) ) wp_send_json_success( ['redirect'=>false,'reason'=>'bypass_cookie'] );
+                $send = static function ( array $payload, string $reason, array $debug = [] ) {
+                        $payload['reason'] = $reason;
+                        $payload['debug']  = array_filter(
+                                array_merge( [ 'reason' => $reason ], $debug ),
+                                static function ( $value ) {
+                                        return $value !== null && $value !== '';
+                                }
+                        );
 
-		$uri  = isset( $_POST['uri'] )
-				? pw_user_geo_normalize_uri( (string) wp_unslash( $_POST['uri'] ) )
-				: '/';
-		$host = isset( $_POST['host'] )
-				? pw_user_geo_normalize_host( (string) wp_unslash( $_POST['host'] ) )
-				: '';
+                        wp_send_json_success( $payload );
+                };
 
-		if ( $host === '' ) {
-				$server_host = isset( $_SERVER['HTTP_HOST'] )
-						? pw_user_geo_normalize_host( (string) wp_unslash( $_SERVER['HTTP_HOST'] ) )
-						: '';
+                // Respect settings
+                if ( empty( $opt['enabled'] ) ) {
+                        $send( [ 'redirect' => false ], 'disabled' );
+                }
 
-				$host = $server_host;
-		}
+                if ( defined( 'REST_REQUEST' ) && REST_REQUEST ) {
+                        $send( [ 'redirect' => false ], 'rest' );
+                }
 
-		if ( $host === '' ) {
-				wp_send_json_success( [ 'redirect' => false, 'reason' => 'host_unknown' ] );
-		}
+                if ( wp_doing_cron() ) {
+                        $send( [ 'redirect' => false ], 'cron' );
+                }
 
-		// Rules
-		$map = pw_user_geo_redirect_parse_mapping( $opt['mapping_raw'] ?? '' );
+                if ( ! empty( $opt['skip_logged_in'] ) && is_user_logged_in() ) {
+                        $send( [ 'redirect' => false ], 'logged_in', [ 'user_logged_in' => true ] );
+                }
 
-		if ( empty( $map ) ) wp_send_json_success( ['redirect'=>false,'reason'=>'no_mapping'] );
+                if ( ! empty( $opt['skip_admins'] ) && current_user_can( 'manage_options' ) ) {
+                        $send( [ 'redirect' => false ], 'admin', [ 'current_user_is_admin' => true ] );
+                }
 
-		// Country
-		$geo = pw_user_geo_get();
-		if ( ! is_array( $geo ) ) wp_send_json_success( ['redirect'=>false,'reason'=>'geo_error'] );
-		$cc = strtoupper( $geo['country_code'] ?? '' );
+                if ( ! empty( $opt['respect_bypass'] ) && ! empty( $_COOKIE['pw_geo_noredirect'] ) ) {
+                        $send( [ 'redirect' => false ], 'bypass_cookie' );
+                }
 
-		$tpl = $map[ $cc ] ?? ( $map['*'] ?? '' );
-		if ( ! $tpl ) wp_send_json_success( ['redirect'=>false,'reason'=>'no_rule'] );
+                // Input from client
+                $uri  = isset( $_POST['uri'] )
+                        ? pw_user_geo_normalize_uri( (string) wp_unslash( $_POST['uri'] ) )
+                        : '/';
+                $host_input = isset( $_POST['host'] ) ? (string) wp_unslash( $_POST['host'] ) : '';
+                $host       = pw_user_geo_resolve_request_host( $host_input );
+                $host_known = $host !== '';
 
-		$target = str_replace( '{REQUEST_URI}', $uri ?: '/', $tpl );
+                $debug = [
+                        'uri'           => $uri,
+                        'client_host'   => $host_input !== '' ? $host_input : null,
+                        'resolved_host' => $host_known ? $host : null,
+                        'host_known'    => $host_known,
+                ];
 
-		// Loop guard: identical URL -> no redirect
-		if ( $host_known ) {
-			$scheme       = is_ssl() ? 'https://' : 'http://';
-			$current_full = $scheme . $host . $uri;
-			if ( rtrim( $target, '/' ) === rtrim( $current_full, '/' ) ) {
-					wp_send_json_success( ['redirect'=>false,'reason'=>'same_url'] );
-			}
-		}
+                // Rules
+                $map = pw_user_geo_redirect_parse_mapping( $opt['mapping_raw'] ?? '' );
+                $debug['mapping_count'] = count( $map );
 
+                if ( empty( $map ) ) {
+                        $send( [ 'redirect' => false ], 'no_mapping', $debug );
+                }
 
+                // Country
+                $geo = pw_user_geo_get();
+                if ( ! is_array( $geo ) ) {
+                        $debug['geo_status'] = 'error';
+                        $send( [ 'redirect' => false ], 'geo_error', $debug );
+                }
 
-		wp_send_json_success( [
-			'redirect' => true,
-			'url'      => $target,
-			'reason'   => 'rule_match',
-			'cc'       => $cc,
-		] );
-	}
+                $debug['geo_status']   = 'ok';
+                $debug['geo_provider'] = $geo['provider'] ?? '';
+
+                $cc = strtoupper( $geo['country_code'] ?? '' );
+                $debug['country_code'] = $cc;
+
+                $tpl = $map[ $cc ] ?? ( $map['*'] ?? '' );
+                if ( ! $tpl ) {
+                        $send( [ 'redirect' => false ], 'no_rule', $debug );
+                }
+
+                $debug['rule'] = $tpl;
+
+                $target = str_replace( '{REQUEST_URI}', $uri ?: '/', $tpl );
+                $debug['target'] = $target;
+
+                // Loop guard: identical URL -> no redirect
+                if ( $host_known ) {
+                        $scheme       = is_ssl() ? 'https://' : 'http://';
+                        $current_full = $scheme . $host . $uri;
+                        if ( rtrim( $target, '/' ) === rtrim( $current_full, '/' ) ) {
+                                $loop_debug = $debug;
+                                $loop_debug['current_url'] = $current_full;
+                                $send( [ 'redirect' => false ], 'same_url', $loop_debug );
+                        }
+
+                        $debug['current_url'] = $current_full;
+                }
+
+                $send(
+                        [
+                                'redirect' => true,
+                                'url'      => $target,
+                                'cc'       => $cc,
+                        ],
+                        'rule_match',
+                        $debug
+                );
+        }
 }
 add_action( 'wp_ajax_pw_user_geo_redirect',        'pw_user_geo_redirect_ajax' );
 add_action( 'wp_ajax_nopriv_pw_user_geo_redirect', 'pw_user_geo_redirect_ajax' );
