@@ -373,11 +373,15 @@ if ( ! function_exists( 'pw_user_geo_redirect_ajax' ) ) {
 		$target = str_replace( '{REQUEST_URI}', $uri ?: '/', $tpl );
 
 		// Loop guard: identical URL -> no redirect
-		$scheme       = is_ssl() ? 'https://' : 'http://';
-		$current_full = $scheme . $host . $uri;
-		if ( rtrim( $target, '/' ) === rtrim( $current_full, '/' ) ) {
-			wp_send_json_success( ['redirect'=>false,'reason'=>'same_url'] );
+		if ( $host_known ) {
+			$scheme       = is_ssl() ? 'https://' : 'http://';
+			$current_full = $scheme . $host . $uri;
+			if ( rtrim( $target, '/' ) === rtrim( $current_full, '/' ) ) {
+					wp_send_json_success( ['redirect'=>false,'reason'=>'same_url'] );
+			}
 		}
+
+
 
 		wp_send_json_success( [
 			'redirect' => true,
