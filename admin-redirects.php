@@ -10,7 +10,7 @@ function pw_user_geo_redirect_default_options() {
 		'skip_logged_in' => 1,
 		'skip_admins'    => 1,
 		'respect_bypass' => 1,
-		'mapping_raw'    => "IL|https://he.webdevtest.co.il{REQUEST_URI}\nFR|https://fr.webdevtest.co.il{REQUEST_URI}\nUS|https://en.webdevtest.co.il{REQUEST_URI}\n*|https://en.webdevtest.co.il{REQUEST_URI}",
+		'mapping_raw'    => "IL|https://he.webdevtest.co.il{REQUEST_URI}\nFR|https://fr.webdevtest.co.il{REQUEST_URI}\nES|https://es.webdevtest.co.il{REQUEST_URI}\nPT|https://pd.webdevtest.co.il{REQUEST_URI}\nDE|https://de.webdevtest.co.il{REQUEST_URI}\n*|https://webdevtest.co.il{REQUEST_URI}",
 	];
 }
 
